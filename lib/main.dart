@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:blue_print_pos/blue_print_pos.dart';
@@ -12,6 +13,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_reactive_ble/flutter_reactive_ble.dart' as RB;
 
 void main() {
   runApp(const MyApp());
@@ -24,7 +26,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Bluetooth Print Demo',
+      title: 'Bluetooth Demo',
       theme: ThemeData(
         // This is the theme of your application.
         //
@@ -37,7 +39,7 @@ class MyApp extends StatelessWidget {
         // is not restarted.
         primarySwatch: Colors.blue,
       ),
-      home: const MyHomePage(title: 'Bluetooth Print Demo'),
+      home: const MyHomePage(title: 'Bluetooth Demo'),
     );
   }
 }
@@ -66,6 +68,24 @@ class _MyHomePageState extends State<MyHomePage> {
   BlueDevice? _selectedDevice;
   bool _isLoading = false;
   int _loadingAtIndex = -1;
+
+  // BLE weighing
+  final flutterReactiveBle = RB.FlutterReactiveBle();
+  RB.DiscoveredDevice? deviceChipseaBle;
+  String mButtonText = "Connect Chipsea-BLE";
+  String mWeighingReading = "---";
+  String mUnit = "no";
+
+  @override
+  void initState() {
+    super.initState();
+    (WidgetsBinding.instance)?.addPostFrameCallback((_) async {});
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+  }
 
   Future<void> _onScanPressed() async {
     if (Platform.isAndroid) {
@@ -209,6 +229,140 @@ class _MyHomePageState extends State<MyHomePage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
+                        Container(
+                          alignment: Alignment.center,
+                          child: Text(
+                            "Weight (" + mUnit + ")",
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                        Container(
+                          alignment: Alignment.center,
+                          child: Text(
+                            mWeighingReading,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontSize: 48),
+                          ),
+                        ),
+                        Container(
+                          alignment: Alignment.center,
+                          child: TextButton(
+                            child: Text(
+                              mButtonText,
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                mButtonText = "Connecting...";
+                              });
+
+                              flutterReactiveBle.scanForDevices(
+                                withServices: [],
+                                scanMode: RB.ScanMode.lowLatency,
+                              ).listen((device) async {
+                                //code for handling results
+                                if (deviceChipseaBle == null &&
+                                    device.name == "Chipsea-BLE") {
+                                  deviceChipseaBle = device;
+
+                                  flutterReactiveBle
+                                      .connectToDevice(
+                                    id: device.id,
+                                    servicesWithCharacteristicsToDiscover: null,
+                                    connectionTimeout:
+                                        const Duration(seconds: 2),
+                                  )
+                                      .listen((connectionState) {
+                                    // Handle connection state updates
+                                    String _connectionStatus = "---";
+                                    switch (connectionState.connectionState) {
+                                      case RB.DeviceConnectionState.connected:
+                                        _connectionStatus =
+                                            "Connected Chipsea-BLE";
+                                        break;
+                                      case RB.DeviceConnectionState.connecting:
+                                        _connectionStatus = "Connecting...";
+                                        break;
+                                      case RB
+                                          .DeviceConnectionState.disconnected:
+                                        _connectionStatus = "Disconnected";
+                                        break;
+                                      case RB
+                                          .DeviceConnectionState.disconnecting:
+                                        _connectionStatus = "Disconnecting...";
+                                        break;
+                                      default:
+                                        break;
+                                    }
+
+                                    setState(() {
+                                      mButtonText = _connectionStatus;
+                                    });
+                                  }, onError: (Object error) {
+                                    // Handle a possible error
+                                  });
+
+                                  List<RB.DiscoveredService> services =
+                                      await flutterReactiveBle.discoverServices(
+                                    device.id,
+                                  );
+
+                                  final characteristic =
+                                      RB.QualifiedCharacteristic(
+                                    serviceId: RB.Uuid.parse("FFF0"),
+                                    characteristicId: RB.Uuid.parse("fff1"),
+                                    deviceId: device.id,
+                                  );
+                                  flutterReactiveBle
+                                      .subscribeToCharacteristic(characteristic)
+                                      .listen((data) {
+                                    // code to handle incoming data
+                                    if (data.isNotEmpty) {
+                                      List<int> _dataReading =
+                                          data.sublist(0, 6);
+                                      int _dataAttribute = data[6];
+                                      int _dataDecimalPoint =
+                                          _dataAttribute & 0x07;
+                                      int _dataUnit = _dataAttribute & 0x38;
+
+                                      String _reading =
+                                          String.fromCharCodes(_dataReading);
+                                      if (_reading.isNotEmpty) {
+                                        int decimalPointAt =
+                                            _reading.length - _dataDecimalPoint;
+                                        String _readingFront = _reading
+                                            .substring(0, decimalPointAt);
+                                        String _readingBack =
+                                            _reading.substring(decimalPointAt);
+
+                                        String _unit = "no";
+                                        if (_dataUnit == 8) {
+                                          _unit = "kg";
+                                        } else if (_dataUnit == 16) {
+                                          _unit = "lb";
+                                        } else if (_dataUnit == 24) {
+                                          _unit = "oz";
+                                        } else if (_dataUnit == 32) {
+                                          _unit = "g";
+                                        }
+
+                                        setState(() {
+                                          mWeighingReading = _readingFront +
+                                              "." +
+                                              _readingBack;
+                                          mUnit = _unit;
+                                        });
+                                      }
+                                    }
+                                  }, onError: (dynamic error) {
+                                    // code to handle errors
+                                  });
+                                }
+                              }, onError: (err) {
+                                //code for handling error
+                              });
+                            },
+                          ),
+                        ),
                         Column(
                           children: List<Widget>.generate(_blueDevices.length,
                               (int index) {
